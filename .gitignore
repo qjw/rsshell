@@ -4,3 +4,10 @@ sample/sample
 sshd/main
 sshd/sshd
 ssh/ssh
+proxy/svr
+proxy/proxy
+proxy/out/out
+proxy/in/in
+proxy/in/config_dev.json
+proxy/out/config_dev.json
+proxy/config_dev.json

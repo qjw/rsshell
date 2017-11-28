@@ -14,19 +14,17 @@ void init(){
     tcgetattr( STDIN_FILENO, &oldt);
     newt = oldt;
 
-    // newt.c_lflag &= ~( ICANON | ISIG);
-	/////////////////
 	cfmakeraw(&newt);
+	// 客户端不要回显
 	// newt.c_lflag |= ECHO | ECHOE;
 	newt.c_iflag |= ICRNL;
 	newt.c_oflag |= OPOST;
 
-	//printf("%x %x %x %x\n",newt.c_iflag,newt.c_oflag,newt.c_lflag,newt.c_cflag);
-	//for(i=0;i< NCCS;i++){
-	//	printf("%d ",newt.c_cc[i]);
-	//}
-	//printf("\n");
     tcsetattr( STDIN_FILENO, TCSANOW, &newt);
+}
+
+void Close(int fd){
+	close(fd);
 }
 
 */
@@ -63,7 +61,7 @@ func handleWrite(conn *net.TCPConn, reader *os.File, done chan string) {
 	done <- "Sent"
 }
 
-func handleRead(conn *net.TCPConn, wt io.WriteCloser, done chan string) {
+func handleRead(conn *net.TCPConn, wt *os.File, done chan string) {
 	buf := make([]byte, 1024)
 	for {
 		l, err := conn.Read(buf)
@@ -76,7 +74,6 @@ func handleRead(conn *net.TCPConn, wt io.WriteCloser, done chan string) {
 			break
 		}
 
-		// fmt.Println("recv :", string(buf[:l]))
 		_, err = wt.Write(buf[:l])
 		if err != nil {
 			fmt.Println("Error to write message because of ", err)
@@ -85,7 +82,8 @@ func handleRead(conn *net.TCPConn, wt io.WriteCloser, done chan string) {
 	}
 
 	// 忽略错误（尝试退出shell）
-	wt.Close()
+	C.Close(C.int(wt.Fd()))
+	// wt.Close()
 	done <- "Read"
 }
 

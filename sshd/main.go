@@ -10,7 +10,7 @@ package main
 #define _BSD_SOURCE
 #include <termios.h>
 
-int fd1(){
+int Fdm(){
 	int fdm;
 	int rc;
 	fdm = posix_openpt(O_RDWR);
@@ -24,6 +24,7 @@ int fd1(){
 	if (rc != 0)
 	{
 		fprintf(stderr, "Error %d on grantpt()\n", errno);
+		close(fdm);
 		return -1;
 	}
 
@@ -31,37 +32,83 @@ int fd1(){
 	if (rc != 0)
 	{
 		fprintf(stderr, "Error %d on unlockpt()\n", errno);
+		close(fdm);
 		return -1;
 	}
 	return fdm;
 }
 
-int fd2(int fdm) {
+struct termios* Fds(int fdm, int *fdsp) {
 	int fds = -1;
 	int rc = -1;
 	struct termios slave_orig_term_settings; // Saved terminal settings
 	struct termios new_term_settings; // Current terminal settings
+	const char* name;
+	struct termios* res = NULL;
 
+	name = ptsname(fdm);
+	if(!name){
+		fprintf(stderr, "Error %d on ptsname(%d)\n", errno,fdm);
+		return NULL;
+	}
 	// Open the slave side ot the PTY
-	fds = open(ptsname(fdm), O_RDWR);
+	fds = open(name, O_RDWR);
 	if (fds < 0)
 	{
-		fprintf(stderr, "Error %d on posix_openpt()\n", errno);
-		return -1;
+		fprintf(stderr, "Error %d on open(%s)\n", errno, name);
+		return NULL;
 	}
 
 	// Save the defaults parameters of the slave side of the PTY
 	rc = tcgetattr(fds, &slave_orig_term_settings);
-
+	if (rc < 0)
+	{
+		fprintf(stderr, "Error %d on tcgetattr()\n", errno);
+		close(fds);
+		return NULL;
+	}
 	// Set RAW mode on slave side of PTY
 	new_term_settings = slave_orig_term_settings;
 	cfmakeraw (&new_term_settings);
 	new_term_settings.c_lflag |= ECHO | ECHOE;
 	new_term_settings.c_iflag |= ICRNL;
 	new_term_settings.c_oflag |= OPOST;
-	tcsetattr (fds, TCSANOW, &new_term_settings);
 
-	return fds;
+	if( tcsetattr (fds, TCSANOW, &new_term_settings) < 0){
+		fprintf(stderr, "Error %d on tcsetattr(%d)\n", errno, fds);
+		close(fds);
+		return NULL;
+	}
+
+	res = (struct termios*)malloc(sizeof(struct termios));
+	*res = slave_orig_term_settings;
+	*fdsp = fds;
+	return res;
+}
+
+void* Init(int pip[2]){
+	int fdm = Fdm();
+	if(fdm < 0) {
+		return NULL;
+	}
+
+	int fds = -1;
+	struct termios* res = Fds(fdm, &fds);
+	if(!res) {
+		close(fdm);
+		return NULL;
+	}
+
+	pip[0] = fdm;
+	pip[1] = fds;
+	return (void*)res;
+}
+
+void Fini(void* param) {
+	if(param){
+		// tcsetattr(0, TCSANOW, (struct termios*)param);
+		free(param);
+	}
 }
 
 */
@@ -74,7 +121,24 @@ import (
 	"os/exec"
 	"os/signal"
 	"syscall"
+	"unsafe"
 )
+
+func initTerminal() (*os.File, *os.File, unsafe.Pointer) {
+	param := [...]C.int{-1, -1}
+	res := C.Init(&param[0])
+	if res != nil {
+		return os.NewFile(uintptr(param[0]), "ptsm"), os.NewFile(uintptr(param[1]), "pty"), res
+	} else {
+		return nil, nil, nil
+	}
+}
+
+func finiTerminal(res unsafe.Pointer) {
+	if res != nil {
+		C.Fini(res)
+	}
+}
 
 func main() {
 	fmt.Println("Starting the server ...")
@@ -227,18 +291,19 @@ func handleRead(conn *net.TCPConn, wt *os.File, done chan string) {
 }
 
 func doServerStuff(conn *net.TCPConn, out chan *net.TCPConn) {
+	defer func() {out <- conn}()
 	/////////////////////////////////////////////////////////
-	cmd := exec.Command("/bin/bash")
 	//cmd := exec.Command("/bin/login")
 
-	fd := C.fd1()
-	fd2 := C.fd2(fd)
-	fmt.Println("tty ", fd, fd2)
-	pty1 := os.NewFile(uintptr(fd), "ptsm")
+	pty1,tty,res := initTerminal()
+	if res == nil {
+		fmt.Println("init terminal fail")
+		return
+	}
+	defer finiTerminal(res)
 	defer pty1.Close()
 
-	tty := os.NewFile(uintptr(fd2), "pty")
-
+	cmd := exec.Command("/bin/bash")
 	cmd.Stdout = tty
 	cmd.Stdin = tty
 	cmd.Stderr = tty
@@ -250,7 +315,6 @@ func doServerStuff(conn *net.TCPConn, out chan *net.TCPConn) {
 	if err := cmd.Start(); err != nil {
 		fmt.Printf("err %s %v", "main end", err)
 		tty.Close()
-		out <- conn
 		return
 	}
 	tty.Close()
@@ -266,7 +330,4 @@ func doServerStuff(conn *net.TCPConn, out chan *net.TCPConn) {
 	<-done
 	// Wait后台进程
 	cmd.Wait()
-
-	// 销毁tcp连接
-	out <- conn
 }
